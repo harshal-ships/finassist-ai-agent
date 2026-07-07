@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.agentcore.aws.dev/v1/agentcore.json",
+  "name": "finassist",
+  "version": 1,
+  "managedBy": "CDK",
+  "tags": {
+    "agentcore:created-by": "agentcore-cli",
+    "agentcore:project-name": "finassist"
+  },
+  "runtimes": [
+    {
+      "name": "finassist",
+      "build": "CodeZip",
+      "entrypoint": "main.py",
+      "codeLocation": "app",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP",
+      "envVars": [
+        { "name": "AWS_DEFAULT_REGION", "value": "ap-southeast-1" },
+        { "name": "NOVA_SONIC_REGION", "value": "ap-northeast-1" },
+        { "name": "NOVA_SONIC_MODEL_ID", "value": "amazon.nova-2-sonic-v1:0" },
+        { "name": "NOVA_SONIC_VOICE_ID", "value": "matthew" }
+      ]
+    }
+  ],
+  "memories": [],
+  "knowledgeBases": [],
+  "credentials": [],
+  "evaluators": [],
+  "onlineEvalConfigs": [],
+  "agentCoreGateways": [],
+  "policyEngines": [],
+  "configBundles": [],
+  "abTests": [],
+  "harnesses": [],
+  "datasets": [],
+  "payments": []
+}

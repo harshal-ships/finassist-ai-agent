@@ -1,0 +1,26 @@
+# Secrets
+.env
+.env.local
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# AgentCore build / CLI
+agentcore/.cache/
+agentcore/.cli/logs/
+agentcore/finassist/
+agentcore/*.zip
+
+# CDK
+agentcore/cdk/node_modules/
+agentcore/cdk/cdk.out/
+agentcore/cdk/dist/
+
+# OS / editor
+.DS_Store
+
+# Docs (kept local; blog lives outside this repo)
+/README.md
