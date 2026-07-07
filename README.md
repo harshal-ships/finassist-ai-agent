@@ -69,11 +69,3 @@ agentcore logs
 | **Nova Sonic 2** | Speech-to-speech AI (Bedrock) |
 | **finassist_agent/** | Prompts, eligibility logic, voice bridge |
 
-## Regions
-
-Nova 2 Sonic is not in `ap-southeast-1`. Set `NOVA_SONIC_REGION` in `.env.local`:
-
-| Region | Value |
-|---|---|
-| APAC | `ap-northeast-1` |
-| EU | `eu-north-1` |
