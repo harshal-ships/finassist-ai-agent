@@ -42,13 +42,6 @@ finassist/
         └── logic.py             # Loan / claim eligibility rules
 ```
 
-Other files at this repo root:
-
-| File | Purpose |
-|---|---|
-| `BLOG.md` | In-depth technical write-up (architecture, audio rates, latency, deploy) |
-| `finassist/` | Runnable AgentCore project — clone/push this to GitHub |
-
 ## Prerequisites
 
 - Node.js 20+ and `@aws/agentcore` CLI
