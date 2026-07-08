@@ -4,10 +4,6 @@
 
 Built with **Amazon Bedrock AgentCore**, **AgentDuet** (telephony), and **Amazon Nova Sonic 2** (speech-to-speech). No separate STT/TTS pipeline — Nova handles listening, reasoning, and speaking in one bidirectional stream.
 
-```
-Phone → AgentDuet → AgentCore Runtime → Nova Sonic 2 → FinAssist
-```
-
 ## What FinAssist does
 
 | Scenario | Collects | Example outcomes |
