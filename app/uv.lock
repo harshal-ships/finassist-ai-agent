@@ -194,6 +194,7 @@ dependencies = [
     { name = "agentduet" },
     { name = "aws-sdk-bedrock-runtime" },
     { name = "bedrock-agentcore" },
+    { name = "boto3" },
     { name = "python-dotenv" },
 ]
 
@@ -202,6 +203,7 @@ requires-dist = [
     { name = "agentduet", specifier = "==1.0.0b7" },
     { name = "aws-sdk-bedrock-runtime" },
     { name = "bedrock-agentcore" },
+    { name = "boto3" },
     { name = "python-dotenv" },
 ]
 

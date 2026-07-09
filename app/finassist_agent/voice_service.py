@@ -33,6 +33,7 @@ from finassist_agent.prompts import (
     build_call_system_prompt,
     is_hangup_request,
 )
+from finassist_agent.transcript_logger import CallTranscript, TranscriptCollector, persist_transcript
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +101,15 @@ async def claim_inbound_call(sm: SessionManager, noti: CallNotification) -> Call
 async def bridge_call_to_nova(call: Call) -> None:
     """Full-duplex bridge: AgentDuet 24 kHz ↔ Nova Sonic (16 kHz in / 24 kHz out)."""
     nova_region, nova_model = _nova_settings()
+    call_started_at = time.time()
+    transcript_collector = TranscriptCollector()
 
     nova = NovaSonicSession(
         build_call_system_prompt(),
         model_id=nova_model,
         region=nova_region,
         voice_id=NOVA_VOICE_ID,
+        transcript_collector=transcript_collector,
     )
     nova._initialize_client()  # noqa: SLF001
 
@@ -219,6 +223,20 @@ async def bridge_call_to_nova(call: Call) -> None:
     finally:
         stop.set()
         await nova.close()
+        call_ended_at = time.time()
+        transcript_collector.flush_pending()
+        transcript = CallTranscript.build(
+            call_id=str(call.id),
+            caller_number=str(getattr(call, "caller_number", "") or ""),
+            started_at=call_started_at,
+            ended_at=call_ended_at,
+            collector=transcript_collector,
+            agent=AGENT_NAME,
+            platform=PLATFORM_NAME,
+            nova_model=nova_model,
+            nova_region=nova_region,
+        )
+        await persist_transcript(transcript, ended_at=call_ended_at)
         try:
             await call.close()
         except Exception:

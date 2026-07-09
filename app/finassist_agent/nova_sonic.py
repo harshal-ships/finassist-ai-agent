@@ -10,7 +10,10 @@ import os
 import struct
 import time
 import uuid
-from typing import AsyncIterator, Callable, Optional
+from typing import TYPE_CHECKING, AsyncIterator, Callable, Optional
+
+if TYPE_CHECKING:
+    from finassist_agent.transcript_logger import TranscriptCollector
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,7 @@ class NovaSonicSession:
         model_id: str = "amazon.nova-2-sonic-v1:0",
         region: str = "ap-northeast-1",
         voice_id: str = "matthew",
+        transcript_collector: Optional["TranscriptCollector"] = None,
     ):
         self.model_id = model_id
         self.region = region
@@ -66,6 +70,7 @@ class NovaSonicSession:
         self._closing = False
         self._role = "ASSISTANT"
         self._on_transcript: Optional[Callable[[str, str], None]] = None
+        self._transcript_collector = transcript_collector
         self._last_transcript: dict[str, tuple[str, float]] = {}
         self._started_at = 0.0
         self._first_audio_logged = False
@@ -248,6 +253,9 @@ class NovaSonicSession:
                     continue
                 data = json.loads(result.value.bytes_.decode("utf-8"))
                 event = data.get("event", {})
+
+                if self._transcript_collector is not None and event:
+                    self._transcript_collector.process_event(event)
 
                 if "contentStart" in event:
                     self._role = event["contentStart"].get("role", self._role)
