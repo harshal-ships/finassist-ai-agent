@@ -109,26 +109,6 @@ async def bridge_call_to_nova(call: Call) -> None:
     )
     nova._initialize_client()  # noqa: SLF001
 
-    if not await call.answer():
-        logger.error("Failed to answer call %s", call.id)
-        return
-
-    try:
-        await nova.start()
-    except Exception:
-        logger.exception("Failed to start Nova Sonic for call %s", call.id)
-        await nova.close()
-        return
-
-    logger.info(
-        "Call %s — %s | model=%s region=%s voice=%s",
-        call.id,
-        AGENT_NAME,
-        nova_model,
-        nova_region,
-        NOVA_VOICE_ID,
-    )
-
     stop = asyncio.Event()
     hangup_requested = asyncio.Event()
     hangup_task: Optional[asyncio.Task] = None
@@ -159,6 +139,39 @@ async def bridge_call_to_nova(call: Call) -> None:
                 hangup_task = asyncio.create_task(schedule_hangup())
 
     nova._on_transcript = on_transcript  # noqa: SLF001
+
+    @call.on_terminated
+    def on_terminated() -> None:
+        logger.info("Call %s terminated", call.id)
+        stop.set()
+
+    # Warm Nova while the phone leg is answering.
+    answer_task = asyncio.create_task(call.answer())
+    prepare_task = asyncio.create_task(nova.prepare())
+
+    if not await answer_task:
+        logger.error("Failed to answer call %s", call.id)
+        await nova.cancel()
+        if not prepare_task.done():
+            prepare_task.cancel()
+            await asyncio.gather(prepare_task, return_exceptions=True)
+        return
+
+    try:
+        await prepare_task
+    except Exception:
+        logger.exception("Failed to start Nova Sonic for call %s", call.id)
+        await nova.close()
+        return
+
+    logger.info(
+        "Call %s — %s | model=%s region=%s voice=%s",
+        call.id,
+        AGENT_NAME,
+        nova_model,
+        nova_region,
+        NOVA_VOICE_ID,
+    )
 
     async def stream_to_nova() -> None:
         """Full duplex: always forward caller mic → Nova (Nova handles barge-in)."""
@@ -200,11 +213,6 @@ async def bridge_call_to_nova(call: Call) -> None:
             logger.exception("Error playing Nova Sonic audio to caller")
         finally:
             stop.set()
-
-    @call.on_terminated
-    def on_terminated() -> None:
-        logger.info("Call %s terminated", call.id)
-        stop.set()
 
     try:
         await asyncio.gather(stream_to_nova(), receive_from_nova())

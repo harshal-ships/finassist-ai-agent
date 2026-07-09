@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
+import os
 import struct
+import time
 import uuid
 from typing import AsyncIterator, Callable, Optional
 
@@ -15,7 +18,7 @@ logger = logging.getLogger(__name__)
 AGENTDUET_SAMPLE_RATE = 24000
 NOVA_INPUT_SAMPLE_RATE = 16000
 NOVA_OUTPUT_SAMPLE_RATE = 24000
-ENDPOINTING_SENSITIVITY = "HIGH"
+ENDPOINTING_SENSITIVITY = os.getenv("NOVA_ENDPOINTING_SENSITIVITY", "HIGH")
 
 
 def downsample_24k_to_16k(pcm_24k: bytes) -> bytes:
@@ -64,6 +67,10 @@ class NovaSonicSession:
         self._role = "ASSISTANT"
         self._on_transcript: Optional[Callable[[str, str], None]] = None
         self._last_transcript: dict[str, tuple[str, float]] = {}
+        self._started_at = 0.0
+        self._first_audio_logged = False
+        self._event_queue: Optional[asyncio.Queue] = None
+        self._pump_task: Optional[asyncio.Task] = None
 
     def _initialize_client(self) -> None:
         from aws_sdk_bedrock_runtime.client import BedrockRuntimeClient
@@ -97,32 +104,12 @@ class NovaSonicSession:
             if not self._closing:
                 raise
 
-    async def start(self) -> None:
-        from aws_sdk_bedrock_runtime.client import InvokeModelWithBidirectionalStreamOperationInput
-
-        if self._client is None:
-            self._initialize_client()
-
-        logger.info(
-            "Nova Sonic starting model=%s region=%s voice=%s in=%dkHz out=%dkHz endpointing=%s",
-            self.model_id,
-            self.region,
-            self.voice_id,
-            NOVA_INPUT_SAMPLE_RATE // 1000,
-            NOVA_OUTPUT_SAMPLE_RATE // 1000,
-            ENDPOINTING_SENSITIVITY if "nova-2-sonic" in self.model_id.lower() else "n/a",
-        )
-
-        self._stream = await self._client.invoke_model_with_bidirectional_stream(
-            InvokeModelWithBidirectionalStreamOperationInput(model_id=self.model_id)
-        )
-        self._active = True
-
+    async def _send_session_setup(self) -> None:
         session_start: dict = {
             "event": {
                 "sessionStart": {
                     "inferenceConfiguration": {
-                        "maxTokens": 1024,
+                        "maxTokens": 512,
                         "topP": 0.9,
                         "temperature": 0.7,
                     },
@@ -213,6 +200,116 @@ class NovaSonicSession:
             }
         )
 
+    async def _trigger_immediate_greeting(self) -> None:
+        """Speak the opening line without waiting for caller endpointing."""
+        content_name = str(uuid.uuid4())
+        await self._send_event(
+            {
+                "event": {
+                    "contentStart": {
+                        "promptName": self.prompt_name,
+                        "contentName": content_name,
+                        "type": "TEXT",
+                        "interactive": True,
+                        "role": "USER",
+                        "textInputConfiguration": {"mediaType": "text/plain"},
+                    }
+                }
+            }
+        )
+        await self._send_event(
+            {
+                "event": {
+                    "textInput": {
+                        "promptName": self.prompt_name,
+                        "contentName": content_name,
+                        "content": "The call just connected. Deliver your opening greeting now.",
+                    }
+                }
+            }
+        )
+        await self._send_event(
+            {
+                "event": {
+                    "contentEnd": {
+                        "promptName": self.prompt_name,
+                        "contentName": content_name,
+                    }
+                }
+            }
+        )
+
+    async def _pump_events(self) -> None:
+        try:
+            while self._active:
+                output = await self._stream.await_output()
+                result = await output[1].receive()
+                if not result.value or not result.value.bytes_:
+                    continue
+                data = json.loads(result.value.bytes_.decode("utf-8"))
+                event = data.get("event", {})
+
+                if "contentStart" in event:
+                    self._role = event["contentStart"].get("role", self._role)
+
+                if "textOutput" in event:
+                    text = event["textOutput"].get("content", "")
+                    role = event["textOutput"].get("role", self._role)
+                    if not self._is_interruption_marker(text):
+                        self._emit_transcript(role, text)
+
+                if "audioOutput" in event and not self._first_audio_logged and self._started_at:
+                    elapsed = time.monotonic() - self._started_at
+                    logger.info("First Nova audio to caller after %.2fs", elapsed)
+                    self._first_audio_logged = True
+
+                await self._event_queue.put(data)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if not self._closing:
+                logger.exception("Nova event pump error")
+        finally:
+            await self._event_queue.put(None)
+
+    async def prepare(self) -> None:
+        from aws_sdk_bedrock_runtime.client import InvokeModelWithBidirectionalStreamOperationInput
+
+        if self._client is None:
+            self._initialize_client()
+
+        self._started_at = time.monotonic()
+        self._event_queue = asyncio.Queue()
+        logger.info(
+            "Nova Sonic starting model=%s region=%s voice=%s in=%dkHz out=%dkHz endpointing=%s",
+            self.model_id,
+            self.region,
+            self.voice_id,
+            NOVA_INPUT_SAMPLE_RATE // 1000,
+            NOVA_OUTPUT_SAMPLE_RATE // 1000,
+            ENDPOINTING_SENSITIVITY if "nova-2-sonic" in self.model_id.lower() else "n/a",
+        )
+
+        self._stream = await self._client.invoke_model_with_bidirectional_stream(
+            InvokeModelWithBidirectionalStreamOperationInput(model_id=self.model_id)
+        )
+        self._active = True
+        self._pump_task = asyncio.create_task(self._pump_events())
+        await self._send_session_setup()
+        await self._trigger_immediate_greeting()
+        logger.info("Nova prepared in %.2fs", time.monotonic() - self._started_at)
+
+    async def start(self) -> None:
+        await self.prepare()
+
+    async def cancel(self) -> None:
+        self._active = False
+        self._closing = True
+        if self._pump_task and not self._pump_task.done():
+            self._pump_task.cancel()
+            await asyncio.gather(self._pump_task, return_exceptions=True)
+        await self.close()
+
     async def send_audio(self, pcm_24k: bytes) -> None:
         if not self._active or not pcm_24k or self._closing:
             return
@@ -248,30 +345,22 @@ class NovaSonicSession:
         self._on_transcript(role, cleaned)
 
     async def receive(self) -> AsyncIterator[dict]:
-        """Yield parsed Nova output events; stream audio to caller in the bridge."""
-        while self._active:
-            output = await self._stream.await_output()
-            result = await output[1].receive()
-            if not result.value or not result.value.bytes_:
-                continue
-            data = json.loads(result.value.bytes_.decode("utf-8"))
-            event = data.get("event", {})
-
-            if "contentStart" in event:
-                self._role = event["contentStart"].get("role", self._role)
-
-            if "textOutput" in event:
-                text = event["textOutput"].get("content", "")
-                role = event["textOutput"].get("role", self._role)
-                if not self._is_interruption_marker(text):
-                    self._emit_transcript(role, text)
-
+        """Yield parsed Nova output events from the background pump."""
+        while True:
+            data = await self._event_queue.get()
+            if data is None:
+                break
             yield data
 
     async def close(self) -> None:
-        if self._closing or not self._active:
+        if self._closing:
             return
         self._closing = True
+        self._active = False
+
+        if self._pump_task and not self._pump_task.done():
+            self._pump_task.cancel()
+            await asyncio.gather(self._pump_task, return_exceptions=True)
 
         try:
             await self._send_event(
