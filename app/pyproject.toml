@@ -9,6 +9,7 @@ dependencies = [
     "aws_sdk_bedrock_runtime",
     "bedrock-agentcore",
     "boto3",
+    "aws-opentelemetry-distro>=0.18.0",
 ]
 
 [build-system]
