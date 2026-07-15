@@ -20,7 +20,11 @@
         { "name": "AWS_DEFAULT_REGION", "value": "ap-southeast-1" },
         { "name": "NOVA_SONIC_REGION", "value": "ap-northeast-1" },
         { "name": "NOVA_SONIC_MODEL_ID", "value": "amazon.nova-2-sonic-v1:0" },
-        { "name": "NOVA_SONIC_VOICE_ID", "value": "matthew" }
+        { "name": "NOVA_SONIC_VOICE_ID", "value": "matthew" },
+        { "name": "TRANSCRIPT_S3_PREFIX", "value": "finassist/transcripts" },
+        { "name": "TRANSCRIPT_S3_BUCKET", "value": "" },
+        { "name": "AGENTDUET_API_KEY", "value": "your-key-here" },
+ { "name": "AGENTDUET_CONNECTOR_UUID", "value": "your-connector-uuid-here" }
       ]
     }
   ],
