@@ -11,19 +11,17 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from uuid_extensions import uuid7str
-
 from agentduet import (
     Call,
     CallAudioConfig,
     InboundCallMode,
+    IncomingCallNotification,
     SessionManager,
     SessionManagerConfig,
     TriggerConditionsBuilder,
+    new_session_id,
 )
-from agentduet.exceptions import CallNotFoundError, SessionNotFoundError, BufferFullError
-from agentduet.messages import CallNotification
-from agentduet.session import Session
+from agentduet.exceptions import BufferFullError, CallNotFoundError
 
 from finassist_agent.nova_config import resolve_nova_settings
 from finassist_agent.nova_sonic import NovaSonicSession
@@ -56,46 +54,23 @@ def require_python_312() -> None:
         )
 
 
-async def claim_inbound_call(sm: SessionManager, noti: CallNotification) -> Call:
-    session_ids: list[str] = [noti.txn_uuid]
+def _caller_number(call: Call) -> str:
+    """External party number/handle for logs and transcripts."""
+    return str(call.caller) or call.participant.value
 
+
+async def attach_inbound_call(sm: SessionManager, noti: IncomingCallNotification) -> Call:
+    """Open an ephemeral session and attach it to the notified inbound call.
+
+    agentduet 1.0.0b9 pattern: ``open_session`` + ``process_call`` (no client registry).
+    """
+    session = await sm.open_session(new_session_id(), noti.subscriber)
     try:
-        listed = await sm.list_sessions(
-            identity=noti.identity,
-            participant=noti.participant,
-        )
-        for info in listed:
-            if info.session_id and info.session_id not in session_ids:
-                session_ids.append(info.session_id)
-    except Exception:
-        logger.debug("list_sessions failed", exc_info=True)
-
-    last_error: Exception | None = None
-    for session_id in session_ids:
-        session = sm._registry.get(session_id)
-        if session is None:
-            session = Session(
-                session_id=session_id,
-                identity=noti.identity,
-                http_client=sm._http_client,
-                sm_connection=sm._sm_connection,
-                call_audio=sm.config.call_audio,
-            )
-            sm._registry[session_id] = session
-
-        try:
-            return await session.claim(noti)
-        except (SessionNotFoundError, CallNotFoundError) as exc:
-            last_error = exc
-            sm._registry.pop(session_id, None)
-
-    session = await sm.create_session(uuid7str(), noti.identity)
-    try:
-        return await session.claim(noti)
-    except Exception as exc:
-        if last_error is not None:
-            raise last_error from exc
-        raise
+        return await session.process_call(noti)
+    except CallNotFoundError:
+        # Rare race: notification expired/taken before attach — one fresh retry.
+        session = await sm.open_session(new_session_id(), noti.subscriber)
+        return await session.process_call(noti)
 
 
 async def bridge_call_to_nova(call: Call) -> None:
@@ -103,6 +78,7 @@ async def bridge_call_to_nova(call: Call) -> None:
     nova_region, nova_model = _nova_settings()
     call_started_at = time.time()
     transcript_collector = TranscriptCollector()
+    caller_number = _caller_number(call)
 
     nova = NovaSonicSession(
         build_call_system_prompt(),
@@ -144,8 +120,8 @@ async def bridge_call_to_nova(call: Call) -> None:
 
     nova._on_transcript = on_transcript  # noqa: SLF001
 
-    @call.on_terminated
-    def on_terminated() -> None:
+    @call.on_hangup
+    def on_hangup(_payload: object = None) -> None:
         logger.info("Call %s terminated", call.id)
         stop.set()
 
@@ -169,9 +145,10 @@ async def bridge_call_to_nova(call: Call) -> None:
         return
 
     logger.info(
-        "Call %s — %s | model=%s region=%s voice=%s",
+        "Call %s — %s from %s | model=%s region=%s voice=%s",
         call.id,
         AGENT_NAME,
+        caller_number,
         nova_model,
         nova_region,
         NOVA_VOICE_ID,
@@ -180,7 +157,8 @@ async def bridge_call_to_nova(call: Call) -> None:
     async def stream_to_nova() -> None:
         """Full duplex: always forward caller mic → Nova (Nova handles barge-in)."""
         try:
-            async for chunk in call.audio_stream():
+            # Inbound: remote party is call.caller (isolated track 0 in b9).
+            async for chunk in call.caller.audio_stream():
                 if stop.is_set():
                     break
                 await nova.send_audio(chunk)
@@ -227,7 +205,7 @@ async def bridge_call_to_nova(call: Call) -> None:
         transcript_collector.flush_pending()
         transcript = CallTranscript.build(
             call_id=str(call.id),
-            caller_number=str(getattr(call, "caller_number", "") or ""),
+            caller_number=caller_number,
             started_at=call_started_at,
             ended_at=call_ended_at,
             collector=transcript_collector,
@@ -247,6 +225,7 @@ async def bridge_call_to_nova(call: Call) -> None:
 class VoiceAgentService:
     """Long-running AgentDuet listener bridged to Nova Sonic for FinAssist."""
 
+    _sm: Optional[SessionManager] = None
     _sm_id: Optional[str] = None
     _connected: bool = False
     _active_calls: int = 0
@@ -271,10 +250,12 @@ class VoiceAgentService:
             "nova_voice": NOVA_VOICE_ID,
         }
 
-    async def handle_incoming_call(self, sm: SessionManager, noti: CallNotification) -> None:
-        call = await claim_inbound_call(sm, noti)
+    async def handle_incoming_call(
+        self, sm: SessionManager, noti: IncomingCallNotification
+    ) -> None:
+        call = await attach_inbound_call(sm, noti)
         self._active_calls += 1
-        logger.info("Incoming call %s from %s", call.id, call.caller_number)
+        logger.info("Incoming call %s from %s", call.id, _caller_number(call))
         try:
             await bridge_call_to_nova(call)
         except Exception:
@@ -294,7 +275,9 @@ class VoiceAgentService:
             call_audio=CallAudioConfig(sample_rate=24000, buffer_size=1024 * 1024),
         )
 
+        # install_signal_handlers=False: AgentCore owns process signals / lifespan.
         async with SessionManager(config) as sm:
+            self._sm = sm
             self._connected = True
             self._sm_id = sm.id
             nova_region, nova_model = _nova_settings()
@@ -316,23 +299,29 @@ class VoiceAgentService:
                 logger.warning("Trigger setup failed (%s); continuing", exc)
 
             @sm.on_incoming_call
-            async def on_call(noti: CallNotification) -> None:
-                if noti.txn_uuid in self._inflight:
+            async def on_call(noti: IncomingCallNotification) -> None:
+                # SM already runs this handler in a detached task; dedupe by call id.
+                if noti.call_id in self._inflight:
                     return
-                self._inflight.add(noti.txn_uuid)
+                self._inflight.add(noti.call_id)
+                try:
+                    await self.handle_incoming_call(sm, noti)
+                finally:
+                    self._inflight.discard(noti.call_id)
 
-                async def run() -> None:
-                    try:
-                        await self.handle_incoming_call(sm, noti)
-                    finally:
-                        self._inflight.discard(noti.txn_uuid)
+            await sm.run_forever(install_signal_handlers=False)
 
-                asyncio.create_task(run(), name=f"finassist-call-{noti.txn_uuid}")
-
-            await sm.run_forever()
-
+        self._sm = None
         self._connected = False
         self._sm_id = None
 
     def request_shutdown(self) -> None:
+        """Wake run_forever via SessionManager.disconnect (AgentCore lifespan)."""
         self._shutdown.set()
+        sm = self._sm
+        if sm is not None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            loop.create_task(sm.disconnect())

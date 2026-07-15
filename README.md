@@ -43,7 +43,7 @@ finassist/
 - Node.js 20+ and `@aws/agentcore` CLI
 - Python 3.12+
 - AWS credentials with Bedrock access (SSO recommended)
-- [AgentDuet](https://pypi.org/project/agentduet/) API key + connector UUID
+- [AgentDuet](https://pypi.org/project/agentduet/) `==1.0.0b9` — API key + connector UUID
 
 ```bash
 npm install -g @aws/agentcore

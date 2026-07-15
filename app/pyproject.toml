@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "FinAssist — AgentCore + AgentDuet + Nova Sonic 2 voice agent"
 requires-python = ">=3.12"
 dependencies = [
-    "agentduet==1.0.0b7",
+    "agentduet==1.0.0b9",
     "python-dotenv",
     "aws_sdk_bedrock_runtime",
     "bedrock-agentcore",
