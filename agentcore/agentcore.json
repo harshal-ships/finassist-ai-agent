@@ -24,7 +24,7 @@
         { "name": "TRANSCRIPT_S3_PREFIX", "value": "finassist/transcripts" },
         { "name": "TRANSCRIPT_S3_BUCKET", "value": "" },
         { "name": "AGENTDUET_API_KEY", "value": "your-key-here" },
- { "name": "AGENTDUET_CONNECTOR_UUID", "value": "your-connector-uuid-here" }
+        { "name": "AGENTDUET_CONNECTOR_UUID", "value": "your-connector-uuid-here" }
       ]
     }
   ],
